@@ -46,6 +46,13 @@ def test_text_pdf_returns_200():
     assert body["filename"] == "resume.pdf"
     assert body["size_bytes"] == len(contents)
     assert body["jd_characters"] == len("Python developer")
+    assert body["skill_match"] == {
+        "matched_skills": [],
+        "missing_skills": ["python"],
+        "skill_coverage_percent": 0.0,
+    }
+    assert body["ai_status"] == "not_requested"
+    assert body["ai_feedback"] is None
 
 def test_whitespace_jd_returns_422():
     response = client.post(
@@ -91,4 +98,26 @@ def test_exact_size_limit_reaches_parser():
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Unable to read this PDF. Please upload a valid PDF."
-    
+
+def test_ai_unavailable_preserves_skill_match(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer)
+    pdf.drawString(72,720, "Python developer")
+    pdf.showPage()
+    pdf.save()
+    contents = buffer.getvalue()
+    response = client.post(
+        "/analyze",
+        files={"resume": ("resume.pdf", contents, "application/pdf")},
+        data={"job_description": "Python docker", "include_ai": "true"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ai_status"] == "unavailable"
+    assert body["ai_feedback"] is None
+    assert body["skill_match"] == {
+        "matched_skills": ["python"],
+        "missing_skills": ["docker"],
+        "skill_coverage_percent": 50.0,
+    }

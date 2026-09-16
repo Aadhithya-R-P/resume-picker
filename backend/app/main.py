@@ -1,10 +1,22 @@
 from typing import Annotated
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from app.services.pdf_parser import extract_resume_text
+from app.services.skill_matcher import compare_skills
 from starlette.concurrency import run_in_threadpool
 from pdfplumber.utils.exceptions import PdfminerException
+from app.services.ai_feedback import (
+    generate_ai_feedback,
+    AIFeedbackUnavailable,
+)
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173","http://127.0.0.1:5173",],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 @app.get("/health")
 def health_check():
@@ -14,7 +26,7 @@ def health_check():
     }
 
 @app.post("/analyze")
-async def analyze_resume(resume: Annotated[UploadFile, File()], job_description: Annotated[str, Form()]):
+async def analyze_resume(resume: Annotated[UploadFile, File()], job_description: Annotated[str, Form()], include_ai: Annotated[bool, Form()] = False):
     try:
         max_bytes = 5*1024*1024
         if job_description is None or len(job_description.strip()) == 0:
@@ -50,12 +62,25 @@ async def analyze_resume(resume: Annotated[UploadFile, File()], job_description:
                 status_code=422,
                 detail="No extractable text found. Please upload a text-based PDF."
             )
+        skill_match = await run_in_threadpool(compare_skills, resume_text, job_description)
+        ai_feedback = None
+        ai_status = "not_requested"
+        if include_ai:
+            try:
+                feedback = await run_in_threadpool(generate_ai_feedback,resume_text, job_description)
+                ai_feedback = feedback.model_dump()
+                ai_status = "available"
+            except AIFeedbackUnavailable:
+                ai_status = "unavailable"
         return {
             "status": 200,
             "filename": resume.filename,
             "size_bytes": len(contents),
             "jd_characters": len(job_description.strip()),
-            "resume_text": resume_text
+            "resume_text": resume_text,
+            "skill_match": skill_match,
+            "ai_feedback": ai_feedback,
+            "ai_status": ai_status
         }
     finally:
         await resume.close()
