@@ -165,6 +165,15 @@ npm run build
 
 These check lint rules and the production build. Browser flows have been checked manually during development; there are no automated frontend interaction tests yet. Lint and build checks do not verify end-to-end behavior.
 
+### Local release checks — September 17, 2026
+
+- Backend: all 23 tests passed, with two dependency deprecation warnings.
+- Frontend: lint and production build passed.
+- Browser checks with synthetic files passed: missing resume, whitespace-only JD, successful upload (50% coverage), invalid PDF, blank PDF, recovery after validation errors, no recognized JD skills, and zero coverage.
+- Loading disabled the Analyze button; completed requests restored it. Stopping the backend produced the request-failure message, cleared previous results, and restored the button.
+- At a 375-pixel viewport, the form and skill results fit without horizontal overflow.
+- Live Gemini behavior was not rerun in this pass. Earlier manual AI checks and the automated coverage gaps described above still apply. Public deployment verification remains pending.
+
 ## Limitations and next steps
 
 - No OCR: image-only PDFs without a text layer cannot yield text.
