@@ -1,5 +1,25 @@
 import './App.css'
-import {useState} from 'react'
+import {useEffect, useState} from 'react'
+
+const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/+$/, '')
+
+async function waitForServer(signal) {
+  const deadline = Date.now() + 90_000
+  while (Date.now() < deadline) {
+    signal.throwIfAborted()
+    try {
+      const response = await fetch(`${apiUrl}/health`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        cache: 'no-store',
+      })
+      if (response.ok && (await response.json()).status === 'ok') return
+    } catch {
+      signal.throwIfAborted()
+    }
+    await new Promise((resolve) => setTimeout(resolve, 3000))
+  }
+  throw new Error('Server did not become ready')
+}
 
 function App() {
   const [jobDescription, setJobDescription] = useState('')
@@ -8,10 +28,25 @@ function App() {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
   const [isLoading,setIsLoading] = useState(false)
+  const [serverStatus, setServerStatus] = useState('starting')
+  const [connectionAttempt, setConnectionAttempt] = useState(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    waitForServer(controller.signal)
+      .then(() => { if (!controller.signal.aborted) setServerStatus('ready') })
+      .catch(() => { if (!controller.signal.aborted) setServerStatus('offline') })
+    return () => controller.abort()
+  }, [connectionAttempt])
+
+  function retryConnection() {
+    setServerStatus('starting')
+    setConnectionAttempt((attempt) => attempt + 1)
+  }
 
   async function handleSubmit(event) {
     event.preventDefault()
-    if(isLoading) return
+    if(isLoading || serverStatus !== 'ready') return
     setError('')
     setResult(null)
     if(!resume){
@@ -22,15 +57,24 @@ function App() {
       setError('Please Enter Job Description')
       return
     }
+    if (jobDescription.length > 10_000) {
+      setError('Job description must be at most 10,000 characters.')
+      return
+    }
     const formData = new FormData()
     formData.append('resume', resume)
     formData.append('job_description', jobDescription)
     formData.append('include_ai', String(includeAI))
     setIsLoading(true)
     try{
-      const response = await fetch("http://localhost:8000/analyze", {
+      // A visitor may leave the page open long enough for Render to sleep again.
+      setServerStatus('starting')
+      await waitForServer(AbortSignal.timeout(95_000))
+      setServerStatus('ready')
+      const response = await fetch(`${apiUrl}/analyze`, {
         method: 'POST',
         body: formData,
+        signal: AbortSignal.timeout(60_000),
       })
       const data = await response.json()
       if(!response.ok){
@@ -41,7 +85,8 @@ function App() {
       }
       setResult(data)
     } catch {
-      setError('Could not complete the request. Check that the backend is running.')
+      setError('Could not complete the request. The server may be starting or temporarily unavailable. Reconnect and try again.')
+      setServerStatus('offline')
     } finally {
       setIsLoading(false)
     }
@@ -50,7 +95,13 @@ function App() {
   return (
     <main>
       <h1>ResumePicker</h1>
-      <p>Upload a text-based PDF resume (up to 5 MiB) and paste a job description to compare supported skills.</p>
+      <p>Upload a text-based PDF resume (up to 5 MiB, 10 pages, and 30,000 extracted characters) and paste a job description to compare supported skills.</p>
+      <p role="status">
+        {serverStatus === 'starting' && 'Starting the server—this may take about a minute. You can prepare your PDF and job description while you wait.'}
+        {serverStatus === 'ready' && 'Server ready.'}
+        {serverStatus === 'offline' && 'The server is taking longer than expected. Please try reconnecting.'}
+      </p>
+      {serverStatus === 'offline' && <button type="button" onClick={retryConnection} disabled={isLoading}>Reconnect</button>}
       <form onSubmit={handleSubmit}>
         <div className="form-field">
           <label htmlFor="resume">Resume Pdf</label>
@@ -60,7 +111,7 @@ function App() {
         <div className="form-field">
           <label htmlFor="job-description">Job Description</label>
           <textarea id="job-description" name="job-description" value={jobDescription} rows="4" cols="50" onChange={(e)=>setJobDescription(e.target.value)}/>
-          <p>Characters: {jobDescription.length}</p>
+          <p>Characters: {jobDescription.length} / 10,000</p>
         </div>
         <div className="form-field">
           <div className="checkbox-row">
@@ -68,9 +119,10 @@ function App() {
             <input type="checkbox" id="include-ai" checked={includeAI} onChange={(e)=>setIncludeAI(e.target.checked)}/>
           </div>
           <p>Enabling AI feedback sends your resume text and job description to Google.</p>
+          <p>This demo shares a limited AI allowance across visitors. If it is exhausted, your skill comparison will still work.</p>
         </div>
         {error && <p role="alert">{error}</p>}
-        <button type="submit" disabled={isLoading}>{isLoading ? 'Analyzing...' : 'Analyze'}</button>
+        <button type="submit" disabled={isLoading || serverStatus !== 'ready'}>{isLoading ? 'Analyzing...' : 'Analyze'}</button>
       </form>
       {result && (
         <section>

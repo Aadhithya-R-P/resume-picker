@@ -1,6 +1,9 @@
+import os
 from typing import Annotated
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from app.services.pdf_parser import extract_resume_text
+from app.services.pdf_parser import extract_resume_text, ResumeLimitExceeded
+from app.limits import MAX_JD_CHARACTERS
+from app.middleware import AnalysisLimitsMiddleware
 from app.services.skill_matcher import compare_skills
 from starlette.concurrency import run_in_threadpool
 from pdfplumber.utils.exceptions import PdfminerException
@@ -11,9 +14,12 @@ from app.services.ai_feedback import (
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+app.add_middleware(AnalysisLimitsMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173","http://127.0.0.1:5173",],
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",") if origin.strip()],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
@@ -29,6 +35,8 @@ def health_check():
 async def analyze_resume(resume: Annotated[UploadFile, File()], job_description: Annotated[str, Form()], include_ai: Annotated[bool, Form()] = False):
     try:
         max_bytes = 5*1024*1024
+        if len(job_description) > MAX_JD_CHARACTERS:
+            raise HTTPException(status_code=422, detail="Job description must be at most 10,000 characters.")
         if job_description is None or len(job_description.strip()) == 0:
             raise HTTPException(
                 status_code=422,
@@ -52,6 +60,8 @@ async def analyze_resume(resume: Annotated[UploadFile, File()], job_description:
             )
         try:
             resume_text = await run_in_threadpool(extract_resume_text, contents)
+        except ResumeLimitExceeded as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         except PdfminerException:
             raise HTTPException(
                 status_code=400,

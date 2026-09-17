@@ -10,13 +10,13 @@ This project is a hands-on way to learn backend development, React, testing, ext
 - Optional AI feedback checkbox, off by default, with an explanation that enabling it sends resume text and the job description to Google.
 - On-page matched/missing skills, supported-skill coverage, and AI summary, strengths, gaps, and suggestions. Unavailable and unrequested AI feedback have separate messages.
 - PDF text extraction, including multiple pages.
-- Upload validation: nonempty PDF declared as `application/pdf`, up to 5 MiB, and a nonempty job description.
+- Upload validation: nonempty PDF declared as `application/pdf`, up to 5 MiB, 10 pages, and 30,000 extracted characters; a nonempty job description of at most 10,000 characters.
 - Case-insensitive, whole-word skill matching with matched skills, missing skills, and coverage percentage.
 - Optional AI summary, strengths, gaps, and suggestions, validated with Pydantic.
 - Skill results remain available when a handled AI failure occurs.
 - PDF parsing, matching, and synchronous Gemini requests run in worker threads.
 - Upload cleanup on success and failure.
-- CORS allows the local frontend at `http://localhost:5173` and `http://127.0.0.1:5173`.
+- CORS defaults to the local frontend at `http://localhost:5173` and `http://127.0.0.1:5173`; set `CORS_ORIGINS` to a comma-separated list of exact frontend origins in production.
 
 ## Tech stack
 
@@ -50,7 +50,9 @@ npm install
 npm run dev
 ```
 
-Keep both servers running and open [ResumePicker](http://localhost:5173). The frontend currently sends requests to `http://localhost:8000/analyze`. Use port 5173 for the frontend, matching the backend's local CORS configuration; if Vite selects another port, free port 5173 and restart it.
+Keep both servers running and open [ResumePicker](http://localhost:5173). The frontend defaults to `http://localhost:8000`; set `VITE_API_URL` before building to use a deployed backend. This is public configuration, never a place for API keys. Use port 5173 for local development, matching the backend's default CORS configuration.
+
+The frontend checks `/health` on opening and before each upload, waiting roughly 90 seconds for a sleeping backend. Analyze is disabled until the initial check succeeds, and Reconnect is offered if it fails. Upload requests time out after 60 seconds and are not automatically retried. A browser timeout does not guarantee cancellation of backend work.
 
 Upload a text-based PDF of up to 5 MiB, paste a job description, and select **Analyze**. Leave **Include AI Feedback** unchecked to use skill matching without Google. Enabling it requires the optional backend configuration below.
 
@@ -93,7 +95,7 @@ Accepts multipart form data:
 | Field | Type | Description |
 |---|---|---|
 | `resume` | File, required | PDF declared as `application/pdf`, up to 5 MiB |
-| `job_description` | Text, required | Must contain non-whitespace text |
+| `job_description` | Text, required | Must contain non-whitespace text; at most 10,000 characters, including whitespace |
 | `include_ai` | Boolean, optional | Defaults to `false`; use `true` for Gemini feedback |
 
 A successful response contains:
@@ -137,8 +139,19 @@ This measures supported-skill keyword coverage, not hiring probability or profic
 | `413` | Upload exceeds 5 MiB |
 | `415` | Declared content type is not `application/pdf` |
 | `422` | Missing or invalid form fields, whitespace-only JD, or no extractable text |
+| `422` | JD exceeds 10,000 characters, PDF exceeds 10 pages, or extracted text exceeds 30,000 characters |
+| `429` | Shared analysis request allowance exhausted, or another analysis is running; includes `Retry-After` |
 
 Gemini requests use a 30-second SDK request timeout and one attempt, without automatic retries. Missing AI configuration, handled provider/network errors, empty AI responses, or invalid feedback structure produce `ai_status: "unavailable"` and `ai_feedback: null`. The route still returns HTTP `200` with the extracted text and skill results.
+
+### Shared demo limits
+
+- At most 10 analysis attempts per rolling minute across all visitors. Invalid and busy attempts count toward this allowance. Admission happens before multipart parsing; only one analysis request is admitted at a time, with no waiting queue. Health checks remain available.
+- At most 2 AI attempts per rolling minute and 15 per rolling 24 hours. Failed provider attempts count; missing configuration and oversized input do not. An exhausted allowance preserves HTTP 200 and skill results with AI unavailable.
+- AI output is capped at 2,048 tokens and requested to be concise. Truncated or malformed feedback follows the same unavailable fallback. Character limits are not exact token counts.
+- Counters and the concurrency lock live in memory. Run **one worker on one instance** (for example, `uv run --locked uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`). Sleeping, restarting, or redeploying resets counters. Multiple workers or instances would each have separate allowances. Google's project quota is the authoritative limit; use an unbilled free-tier project for a strictly free demo.
+- These shared limits do not guarantee fair access: one visitor can consume the allowance. CORS is not authentication. File/page/text limits reduce ordinary resource use but are not a hard CPU/memory sandbox for hostile PDFs; multipart parsing and PDF internals can still consume resources before content limits are checked.
+- Handled provider failures log only their exception class, not provider messages, uploaded contents, job descriptions, or API keys.
 
 ## Tests and frontend checks
 
@@ -150,9 +163,9 @@ From `backend`:
 uv run python -m pytest -v
 ```
 
-The suite contains 23 tests covering PDF extraction, upload validation (including the 5 MiB boundary), skill matching, default AI behavior, missing AI configuration, and preservation of skill results when AI configuration is absent.
+The suite contains 44 tests covering PDF extraction, upload validation (including the 5 MiB boundary), skill matching, JD/page/text boundaries, rolling usage windows, concurrent admission, AI success, and unavailable fallback.
 
-Tests use synthetic PDFs and do not require live Gemini requests. AI success has been checked manually but has no automated success-path test. Provider timeouts, quota failures, and malformed AI responses are not yet covered by automated tests. Dependency deprecation warnings may appear during testing.
+Tests use synthetic PDFs and mocked Gemini responses without live API calls. Automated AI checks cover success, timeouts, quota errors, empty/malformed feedback, input rejection, output-cap configuration, and safe error logging. Extracted-text boundaries use mocked extraction. Actual provider quotas, model output quality, hostile-PDF resource behavior, process restarts, and deployed proxy behavior are not verified by this suite. Dependency deprecation warnings may appear during testing.
 
 ### Frontend checks
 
@@ -172,7 +185,9 @@ These check lint rules and the production build. Browser flows have been checked
 - Browser checks with synthetic files passed: missing resume, whitespace-only JD, successful upload (50% coverage), invalid PDF, blank PDF, recovery after validation errors, no recognized JD skills, and zero coverage.
 - Loading disabled the Analyze button; completed requests restored it. Stopping the backend produced the request-failure message, cleared previous results, and restored the button.
 - At a 375-pixel viewport, the form and skill results fit without horizontal overflow.
-- Live Gemini behavior was not rerun in this pass. Earlier manual AI checks and the automated coverage gaps described above still apply. Public deployment verification remains pending.
+- Live Gemini behavior was not rerun in this pass. Public deployment verification remains pending.
+
+After adding the demo safeguards, all 44 backend tests, frontend lint, and the production build passed. The newer wakeup and limit messages still need browser verification; the earlier browser record above predates those changes.
 
 ## Limitations and next steps
 
@@ -180,6 +195,6 @@ These check lint rules and the production build. Browser flows have been checked
 - Extracted spacing and layout may differ from the original PDF.
 - Skill matching uses a small, fixed vocabulary rather than semantic understanding.
 - Pydantic checks AI response structure, not factual accuracy; feedback can be wrong.
-- This is a local MVP without authentication, application rate limiting, or a database.
-- Before public deployment: add input-length and request/AI usage limits, configure production CORS and the API URL, and review data-sharing consent.
-- Next: add frontend and AI failure tests, CI, deployment, and safe error logging; improve matching with realistic synthetic examples.
+- This is a local MVP without authentication or a database. Shared process-local limits have the reset and fairness limitations described above.
+- Before public deployment: configure production CORS and the API URL, verify the free Gemini project's quota and data-sharing terms, and run public browser checks.
+- GitHub Actions runs backend tests and frontend lint/build. Next: deploy, verify the wakeup flow, add live links/screenshots, and merge after CI passes. Automated frontend interaction tests remain future work.
