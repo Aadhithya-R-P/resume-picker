@@ -1,11 +1,14 @@
 # ResumePicker
 
-ResumePicker is a backend MVP that extracts text from a PDF resume, compares supported skills against a job description, and optionally requests structured feedback from Google Gemini.
+ResumePicker is a local MVP with a React frontend and FastAPI backend. It extracts text from a PDF resume, compares supported skills against a job description, and optionally requests structured feedback from Google Gemini.
 
-This project is a hands-on way to learn backend development, testing, external API integration, and eventually CI/CD. The React frontend is planned next.
+This project is a hands-on way to learn backend development, React, testing, external API integration, and eventually CI/CD.
 
 ## Current functionality
 
+- Browser form for PDF upload and job description entry, with loading and error states.
+- Optional AI feedback checkbox, off by default, with an explanation that enabling it sends resume text and the job description to Google.
+- On-page matched/missing skills, supported-skill coverage, and AI summary, strengths, gaps, and suggestions. Unavailable and unrequested AI feedback have separate messages.
 - PDF text extraction, including multiple pages.
 - Upload validation: nonempty PDF declared as `application/pdf`, up to 5 MiB, and a nonempty job description.
 - Case-insensitive, whole-word skill matching with matched skills, missing skills, and coverage percentage.
@@ -17,11 +20,17 @@ This project is a hands-on way to learn backend development, testing, external A
 
 ## Tech stack
 
-Python 3.13+, FastAPI, pdfplumber, Google Gen AI SDK, Pydantic, python-dotenv, and uv. Tests use pytest and ReportLab to create synthetic PDFs.
+- Frontend: React, JavaScript, Vite, and ESLint; Node.js and npm for development.
+- Backend: Python 3.13+, FastAPI, pdfplumber, Google Gen AI SDK, Pydantic, python-dotenv, and uv.
+- Backend tests: pytest and ReportLab to create synthetic PDFs.
 
 ## Setup and run
 
-Install Python and uv. From the repository root, run in PowerShell:
+Install Python, uv, and Node.js with npm. The frontend was developed using Node.js 22.12.0.
+
+### Backend
+
+From the repository root, run in PowerShell:
 
 ```powershell
 cd backend
@@ -30,6 +39,20 @@ uv run fastapi dev app/main.py
 ```
 
 Open [Swagger UI](http://127.0.0.1:8000/docs) to try the endpoints. PDF extraction and skill matching work without a Gemini key.
+
+### Frontend
+
+In a second PowerShell terminal, start from the repository root:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Keep both servers running and open [ResumePicker](http://localhost:5173). The frontend currently sends requests to `http://localhost:8000/analyze`. Use port 5173 for the frontend, matching the backend's local CORS configuration; if Vite selects another port, free port 5173 and restart it.
+
+Upload a text-based PDF of up to 5 MiB, paste a job description, and select **Analyze**. Leave **Include AI Feedback** unchecked to use skill matching without Google. Enabling it requires the optional backend configuration below.
 
 ### Optional Gemini setup
 
@@ -117,7 +140,9 @@ This measures supported-skill keyword coverage, not hiring probability or profic
 
 Gemini requests use a 30-second SDK request timeout and one attempt, without automatic retries. Missing AI configuration, handled provider/network errors, empty AI responses, or invalid feedback structure produce `ai_status: "unavailable"` and `ai_feedback: null`. The route still returns HTTP `200` with the extracted text and skill results.
 
-## Tests
+## Tests and frontend checks
+
+### Backend tests
 
 From `backend`:
 
@@ -127,7 +152,18 @@ uv run python -m pytest -v
 
 The suite contains 23 tests covering PDF extraction, upload validation (including the 5 MiB boundary), skill matching, default AI behavior, missing AI configuration, and preservation of skill results when AI configuration is absent.
 
-Tests use synthetic PDFs and do not require live Gemini requests. AI success has been checked manually. Provider timeouts, quota failures, and malformed AI responses are not yet covered by automated tests. Dependency deprecation warnings may appear during testing.
+Tests use synthetic PDFs and do not require live Gemini requests. AI success has been checked manually but has no automated success-path test. Provider timeouts, quota failures, and malformed AI responses are not yet covered by automated tests. Dependency deprecation warnings may appear during testing.
+
+### Frontend checks
+
+From `frontend`:
+
+```powershell
+npm run lint
+npm run build
+```
+
+These check lint rules and the production build. Browser flows have been checked manually during development; there are no automated frontend interaction tests yet. Lint and build checks do not verify end-to-end behavior.
 
 ## Limitations and next steps
 
@@ -136,4 +172,5 @@ Tests use synthetic PDFs and do not require live Gemini requests. AI success has
 - Skill matching uses a small, fixed vocabulary rather than semantic understanding.
 - Pydantic checks AI response structure, not factual accuracy; feedback can be wrong.
 - This is a local MVP without authentication, application rate limiting, or a database.
-- Next: build the React + Vite frontend, expand coverage where needed, and add CI/CD.
+- Before public deployment: add input-length and request/AI usage limits, configure production CORS and the API URL, and review data-sharing consent.
+- Next: add frontend and AI failure tests, CI, deployment, and safe error logging; improve matching with realistic synthetic examples.
